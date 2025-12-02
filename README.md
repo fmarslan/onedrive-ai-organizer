@@ -1,71 +1,84 @@
-# OneDrive AI Organizer – Klasör Ağacı Çıkarıcı (Colab)
+# OneDrive AI Organizer
 
-Bu proje, OneDrive hesabındaki **tüm klasör ve dosya ağacını**  
-**Google Colab** üzerinden çıkarıp bir **CSV dosyasına** kaydetmek için hazırlandı.
+This project exports the **full OneDrive folder + file tree** and creates helper reports you can review later. It works on any machine or inside Google Colab.
 
-- Çalıştırma ortamı: **Google Colab**
-- Kaynak kod: **GitHub**
-- Kimlik doğrulama: **Microsoft Graph + Device Code Flow**
-- Kullanıcıdan beklenen: Sadece Microsoft hesabıyla oturum açıp **yetkilendirmeyi onaylamak** ✅
+- Runtime: local Python or Google Colab  
+- Auth: Microsoft Graph device-code flow  
+- Output: CSV inventory + two text summaries (current structure + suggested structure) + JSON state file
 
 ---
 
-## 0. Ön koşul – Azure’da App Registration (bir kereye mahsus)
+## 1. Prerequisites (one-time Azure setup)
 
-1. `https://portal.azure.com` adresine git.
-2. **Azure Active Directory → App registrations → New registration**
-3. İsim örneği: `onedrive-ai-organizer-app`
-4. **Supported account types**:  
-   `Accounts in this organizational directory only` (veya `common/organizations` ihtiyaca göre)
-5. Register’a tıkla.
-6. Açılan ekranda:
-   - **Application (client) ID**’yi not al → bunu Colab’de kullanacağız.
-7. Sol menüden **Authentication**:
-   - `Add a platform` → `Mobile and desktop applications`
-   - Redirect URI olarak:
-     - `https://login.microsoftonline.com/common/oauth2/nativeclient`
-   - Eğer varsa **Allow public client flows** / benzeri seçenekleri **Enable** et.
-8. Sol menüden **API permissions**:
-   - `Add a permission` → `Microsoft Graph` → `Delegated`
-   - En az:
-     - `Files.Read.All`
-   - Gerekirse admin’den `Grant admin consent` iste.
+1. Go to <https://portal.azure.com>.
+2. Azure Active Directory → App registrations → New registration.
+3. Give it any name, e.g., `onedrive-ai-organizer-app`.
+4. Supported account types: choose what you need (for most users `Accounts in this organizational directory only` or `common`).
+5. After creation, copy the **Application (client) ID**.
+6. Under Authentication → Add a platform → Mobile and desktop applications → redirect URI `https://login.microsoftonline.com/common/oauth2/nativeclient`. Enable “Allow public client flows” if available.
+7. Under API permissions add Microsoft Graph → Delegated → `Files.Read.All`, then grant admin consent if required.
 
-> Bu adımlar tek seferlik. Sonrasında Colab defterinde sadece **CLIENT_ID** yazman yeterli olacak.
+You will use the client ID (and optionally tenant) when running the script. No other Azure work is needed.
 
 ---
 
-## 1. Bu not defterini Colab’te aç
+## 2. Project structure
 
-Aşağıdaki butona tıklayarak projedeki notebook’u **direkt Google Colab’te açabilirsin**:
+```
+onedrive-ai-organizer/
+├─ README.md
+├─ requirements.txt
+├─ main.py
+└─ src/onedrive_ai_organizer/
+   ├─ __init__.py
+   ├─ config.py
+   └─ onedrive_tree.py
+```
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/<GITHUB_USER>/onedrive-ai-organizer/blob/master/notebooks/onedrive_tree.ipynb)
-
-> Not: İlk seferde `onedrive_tree.ipynb` yoksa, Colab’te yeni bir notebook oluşturup  
-> kaydedebilir, sonra bu linki README’ye ekleyebilirsin.
-
----
-
-## 2. Notebook ne yapıyor?
-
-1. Gerekli Python paketlerini yüklüyor (`msal`, `requests`, `pandas`, `tqdm`).
-2. Senin girdiğin **CLIENT_ID** ve tenant bilgisiyle **device code flow** başlatıyor.
-3. Ekrana **“Şu adrese git → şu kodu gir”** mesajını yazıyor.
-4. Sen tarayıcıda açıp Microsoft hesabınla giriş yapıp yetki veriyorsun.
-5. Kod, aldığın access token ile:
-   - `me/drive/root` üzerinden **OneDrive kök klasörünü** buluyor,
-   - Tüm klasör/dosya ağacını **rekürsif geziyor**,
-   - Her öğe için: `id, path, is_folder, size, last_modified, web_url` bilgilerini topluyor.
-6. Sonuçları `onedrive_tree.csv` dosyasına kaydedip indirilebilir hale getiriyor.
+`main.py` bootstraps Python, asks for config, runs the Graph scan, and writes all outputs.
 
 ---
 
-## 3. Sonraki adım
+## 3. How to run (local machine)
 
-Bu CSV’yi aldıktan sonra:
+```bash
+python -m venv .venv
+. .venv/bin/activate          # Windows: .venv\Scripts\activate
+# Optional: choose a persistent folder for results
+export OUTPUT_DIR="/absolute/path/onedrive-exports"
+pip install -r requirements.txt
+python main.py
+```
 
-- Klasör hiyerarşini benimle paylaşabilirsin,
-- Birlikte yeni **mantıklı hiyerarşi + AI sınıflandırma** pipeline’ını tasarlarız,
-- Ardından bu repo’ya **idempotent çalışan sınıflandırma kodlarını** ekleriz.
+During the run:
+
+1. The CLI asks which classification flow you want (option 1 = full scan + automatic recommendation, option 2 = coming soon).
+2. It prompts for `MS_CLIENT_ID`, `MS_TENANT`, and (if empty) an **output directory** for all artifacts (you can skip the prompt by exporting `OUTPUT_DIR` beforehand).
+3. Follow the printed device-code instructions to log in with your Microsoft account.
+4. The script shows a progress bar while it walks the tree, then saves:
+   - `onedrive_tree.csv` (raw inventory),
+   - `original_structure.txt` (human-readable snapshot),
+   - `recommended_structure.txt` (simple grouped suggestion),
+   - `scan_state.json` (metadata: counts, file paths, duration).
 
 ---
+
+## 4. Running inside Google Colab
+
+1. Open a new Colab notebook and mount Google Drive (`from google.colab import drive; drive.mount('/content/drive')`).  
+2. Clone this repo or copy the source into the notebook.  
+3. Install requirements with `!pip install -r requirements.txt`.  
+4. Set an output folder that lives on Drive (`os.environ["OUTPUT_DIR"] = "/content/drive/MyDrive/onedrive-ai-organizer"`).  
+5. Run `!python main.py` and follow the same prompts as above.
+
+---
+
+## 5. What happens behind the scenes
+
+1. The script collects config (client ID + tenant).  
+2. It starts the MSAL device-code flow and waits for you to approve access.  
+3. Once the token is ready, it calls `me/drive/root` and recursively loads every folder and file (with `id`, `path`, `size`, timestamps, etc.). The script automatically backs off when Microsoft Graph returns rate-limit signals (429/503).  
+4. It exports the raw data to CSV and produces the two text summaries so you can quickly review the current vs. suggested structure.
+5. It writes `scan_state.json` so you know where the results are stored and how long the run took (useful for checkpoints in Colab).
+
+Use the CSV and text files to plan your cleanup or feed them into other tooling. If you extend the repo later (classification pipelines, re-organization scripts, etc.), keep this README as the entry point for running the baseline export.
