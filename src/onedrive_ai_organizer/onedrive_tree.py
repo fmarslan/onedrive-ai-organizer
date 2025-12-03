@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -107,13 +108,19 @@ def graph_get(url: str, access_token: str, params: Optional[dict[str, Any]] = No
 
 
 def walk_onedrive(
-    config: Config, app: msal.PublicClientApplication, initial_access_token: str
+    config: Config,
+    app: msal.PublicClientApplication,
+    initial_access_token: str,
+    state_path: Path,
+    checkpoint_base: dict[str, Any],
+    checkpoint_interval: float = 60.0,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Traverse the user's OneDrive hierarchy iteratively and return all items.
     """
     access_token = initial_access_token
     headers = {"Authorization": f"Bearer {access_token}"}
+    last_checkpoint = 0.0
 
     def _refresh_token_interactive() -> str:
         """Try silent refresh first; fall back to interactive login."""
@@ -136,12 +143,31 @@ def walk_onedrive(
 
     root_id = root["id"]
     root_name = root.get("name", "root")
+    checkpoint_meta = {**checkpoint_base, "root_name": root_name}
     print(f"Root folder: {root_name} (id={root_id})")
     print("Scanning the full tree. This may take a while...\n")
 
     results: list[dict[str, Any]] = []
     stack: list[tuple[str, str]] = [(root_id, "")]
     progress = tqdm(desc="Scanning OneDrive tree", unit="item")
+
+    def _write_checkpoint(force: bool = False) -> None:
+        nonlocal last_checkpoint
+        now = time.time()
+        if not force and now - last_checkpoint < checkpoint_interval:
+            return
+        payload = {
+            **checkpoint_meta,
+            "status": "in_progress",
+            "processed_items": len(results),
+            "pending_items": len(stack),
+            "last_item_path": results[-1]["path"] if results else None,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        _write_state_file(state_path, payload)
+        last_checkpoint = now
+
+    _write_checkpoint(force=True)
 
     while stack:
         current_id, current_path = stack.pop()
@@ -182,6 +208,8 @@ def walk_onedrive(
 
             if is_folder:
                 stack.append((item_id, full_path))
+
+            _write_checkpoint()
 
     progress.close()
     print(f"✅ Scan finished. Total items: {len(results)}")
@@ -316,19 +344,31 @@ def _run_option_auto_classification(config: Config) -> None:
     """Execute option 1: crawl tree, export CSV, and produce structure summaries."""
     start_time = time.time()
     app = create_msal_app(config)
-    access_token = acquire_token_device_code(app)
-    root_name, results = walk_onedrive(config, app, access_token)
     csv_path = config.output_dir / "onedrive_tree.csv"
+    original_path = config.output_dir / ORIGINAL_STRUCTURE_FILE
+    recommended_path = config.output_dir / RECOMMENDED_STRUCTURE_FILE
+    state_path = config.output_dir / STATE_FILE
+    checkpoint_base = {
+        "csv_path": str(csv_path),
+        "original_structure_path": str(original_path),
+        "recommended_structure_path": str(recommended_path),
+        "output_dir": str(config.output_dir),
+    }
+
+    access_token = acquire_token_device_code(app)
+    root_name, results = walk_onedrive(
+        config,
+        app,
+        access_token,
+        state_path=state_path,
+        checkpoint_base=checkpoint_base,
+    )
     export_tree_to_csv(results, csv_path)
 
     original_text = _format_original_structure(results, root_name)
     recommendation_text = _format_recommended_structure(results, root_name)
-    original_path = config.output_dir / ORIGINAL_STRUCTURE_FILE
-    recommended_path = config.output_dir / RECOMMENDED_STRUCTURE_FILE
     _write_text_file(original_path, original_text)
     _write_text_file(recommended_path, recommendation_text)
-
-    state_path = config.output_dir / STATE_FILE
     state_payload = {
         "root_name": root_name,
         "total_items": len(results),
@@ -336,6 +376,8 @@ def _run_option_auto_classification(config: Config) -> None:
         "original_structure_path": str(original_path),
         "recommended_structure_path": str(recommended_path),
         "duration_seconds": round(time.time() - start_time, 2),
+        "status": "completed",
+        "updated_at": datetime.utcnow().isoformat() + "Z",
     }
     _write_state_file(state_path, state_payload)
 

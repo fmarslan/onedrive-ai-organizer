@@ -59,7 +59,7 @@ During the run:
    - `onedrive_tree.csv` (raw inventory),
    - `original_structure.txt` (human-readable snapshot),
    - `recommended_structure.txt` (simple grouped suggestion),
-   - `scan_state.json` (metadata: counts, file paths, duration).
+   - `scan_state.json` (metadata that updates about once per minute so you can monitor progress).
 5. If the Microsoft Graph token expires mid-scan, the CLI first tries to refresh it silently; if that fails, it asks you to approve a fresh device-code login and then resumes exactly where it stopped.
 
 ---
@@ -80,6 +80,6 @@ During the run:
 2. It starts the MSAL device-code flow and waits for you to approve access.  
 3. Once the token is ready, it calls `me/drive/root` and recursively loads every folder and file (with `id`, `path`, `size`, timestamps, etc.). The scanner handles rate limits (429/503) and silently refreshes tokens whenever possible.  
 4. It exports the raw data to CSV and produces the two text summaries so you can quickly review the current vs. suggested structure.
-5. It writes `scan_state.json` so you know where the results are stored and how long the run took (useful for checkpoints in Colab).
+5. It keeps writing `scan_state.json` during the scan (roughly once per minute) so you can see partial progress, then replaces it with the final summary when the run completes.
 
 Use the CSV and text files to plan your cleanup or feed them into other tooling. If you extend the repo later (classification pipelines, re-organization scripts, etc.), keep this README as the entry point for running the baseline export.
