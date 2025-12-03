@@ -60,15 +60,16 @@ During the run:
    - `original_structure.txt` (human-readable snapshot),
    - `recommended_structure.txt` (simple grouped suggestion),
    - `scan_state.json` (metadata: counts, file paths, duration).
+5. If the Microsoft Graph token expires mid-scan, the CLI first tries to refresh it silently; if that fails, it asks you to approve a fresh device-code login and then resumes exactly where it stopped.
 
 ---
 
 ## 4. Running inside Google Colab
 
 1. Open a new Colab notebook and mount Google Drive (`from google.colab import drive; drive.mount('/content/drive')`).  
-2. Clone this repo or copy the source into the notebook.  
+2. Clone this repo: `!git clone https://github.com/fmarslan/onedrive-ai-organizer.git` and `cd onedrive-ai-organizer`.  
 3. Install requirements with `!pip install -r requirements.txt`.  
-4. Set an output folder that lives on Drive (`os.environ["OUTPUT_DIR"] = "/content/drive/MyDrive/onedrive-ai-organizer"`).  
+4. Set an output folder that lives on Drive (`import os; os.environ["OUTPUT_DIR"] = "/content/drive/MyDrive/onedrive-ai-organizer"`).  
 5. Run `!python main.py` and follow the same prompts as above.
 
 ---
@@ -77,7 +78,7 @@ During the run:
 
 1. The script collects config (client ID + tenant).  
 2. It starts the MSAL device-code flow and waits for you to approve access.  
-3. Once the token is ready, it calls `me/drive/root` and recursively loads every folder and file (with `id`, `path`, `size`, timestamps, etc.). The script automatically backs off when Microsoft Graph returns rate-limit signals (429/503).  
+3. Once the token is ready, it calls `me/drive/root` and recursively loads every folder and file (with `id`, `path`, `size`, timestamps, etc.). The scanner handles rate limits (429/503) and silently refreshes tokens whenever possible.  
 4. It exports the raw data to CSV and produces the two text summaries so you can quickly review the current vs. suggested structure.
 5. It writes `scan_state.json` so you know where the results are stored and how long the run took (useful for checkpoints in Colab).
 

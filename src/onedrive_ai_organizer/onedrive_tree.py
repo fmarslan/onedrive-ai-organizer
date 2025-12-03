@@ -23,13 +23,16 @@ RECOMMENDED_STRUCTURE_FILE = "recommended_structure.txt"
 STATE_FILE = "scan_state.json"
 
 
-def acquire_token_device_code(config: Config) -> str:
+class AuthenticationExpiredError(Exception):
+    """Raised when the current access token is no longer valid."""
+
+
+def acquire_token_device_code(app: msal.PublicClientApplication) -> str:
     """
     Authenticate via MSAL device code flow and return an access token.
 
     The printed instructions match the previous single-file script to preserve UX.
     """
-    app = msal.PublicClientApplication(config.client_id, authority=config.authority)
     flow = app.initiate_device_flow(scopes=SCOPES)
     if "user_code" not in flow:
         raise RuntimeError("Failed to start the device authorization flow. Check your Azure app settings.")
@@ -46,6 +49,25 @@ def acquire_token_device_code(config: Config) -> str:
     return result["access_token"]
 
 
+def create_msal_app(config: Config) -> msal.PublicClientApplication:
+    """Create an MSAL public client with its own token cache."""
+    return msal.PublicClientApplication(config.client_id, authority=config.authority)
+
+
+def try_refresh_access_token(app: msal.PublicClientApplication) -> Optional[str]:
+    """Attempt a silent token refresh using the existing MSAL cache."""
+    accounts = app.get_accounts()
+    if not accounts:
+        return None
+
+    result = app.acquire_token_silent(SCOPES, account=accounts[0])
+    if not result or "access_token" not in result:
+        return None
+
+    print("🔄 Access token refreshed silently.")
+    return result["access_token"]
+
+
 def graph_get(url: str, access_token: str, params: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
     """
     Execute a Microsoft Graph GET request, handling pagination automatically.
@@ -56,6 +78,9 @@ def graph_get(url: str, access_token: str, params: Optional[dict[str, Any]] = No
     while url:
         while True:
             resp = requests.get(url, headers=headers, params=params)
+            if resp.status_code == 401:
+                raise AuthenticationExpiredError("Access token expired or became invalid.")
+
             if resp.status_code in {429, 503}:
                 retry_after_raw = resp.headers.get("Retry-After", "").strip()
                 try:
@@ -81,14 +106,33 @@ def graph_get(url: str, access_token: str, params: Optional[dict[str, Any]] = No
     return items
 
 
-def walk_onedrive(access_token: str) -> tuple[str, list[dict[str, Any]]]:
+def walk_onedrive(
+    config: Config, app: msal.PublicClientApplication, initial_access_token: str
+) -> tuple[str, list[dict[str, Any]]]:
     """
     Traverse the user's OneDrive hierarchy iteratively and return all items.
     """
+    access_token = initial_access_token
     headers = {"Authorization": f"Bearer {access_token}"}
-    root_resp = requests.get(f"{GRAPH_BASE_URL}/me/drive/root", headers=headers)
-    root_resp.raise_for_status()
-    root = root_resp.json()
+
+    def _refresh_token_interactive() -> str:
+        """Try silent refresh first; fall back to interactive login."""
+        refreshed = try_refresh_access_token(app)
+        if refreshed:
+            return refreshed
+        print("Access token expired. Please approve the new device-code login.")
+        return acquire_token_device_code(app)
+
+    while True:
+        root_resp = requests.get(f"{GRAPH_BASE_URL}/me/drive/root", headers=headers)
+        if root_resp.status_code == 401:
+            print("Access token expired before scan started. Refreshing...")
+            access_token = _refresh_token_interactive()
+            headers["Authorization"] = f"Bearer {access_token}"
+            continue
+        root_resp.raise_for_status()
+        root = root_resp.json()
+        break
 
     root_id = root["id"]
     root_name = root.get("name", "root")
@@ -103,7 +147,15 @@ def walk_onedrive(access_token: str) -> tuple[str, list[dict[str, Any]]]:
         current_id, current_path = stack.pop()
 
         children_url = f"{GRAPH_BASE_URL}/me/drive/items/{current_id}/children"
-        children = graph_get(children_url, access_token)
+
+        while True:
+            try:
+                children = graph_get(children_url, access_token)
+                break
+            except AuthenticationExpiredError:
+                access_token = _refresh_token_interactive()
+                headers["Authorization"] = f"Bearer {access_token}"
+                continue
 
         for child in children:
             name = child.get("name")
@@ -263,8 +315,9 @@ def _write_state_file(path: Path, state: dict[str, Any]) -> None:
 def _run_option_auto_classification(config: Config) -> None:
     """Execute option 1: crawl tree, export CSV, and produce structure summaries."""
     start_time = time.time()
-    access_token = acquire_token_device_code(config)
-    root_name, results = walk_onedrive(access_token)
+    app = create_msal_app(config)
+    access_token = acquire_token_device_code(app)
+    root_name, results = walk_onedrive(config, app, access_token)
     csv_path = config.output_dir / "onedrive_tree.csv"
     export_tree_to_csv(results, csv_path)
 
